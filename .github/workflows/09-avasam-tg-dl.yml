@@ -1,4 +1,4 @@
-name: 📥 9- TG Downloader
+name: 09 📥 TG Downloader
 
 on:
   workflow_dispatch:

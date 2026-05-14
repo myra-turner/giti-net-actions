@@ -1,4 +1,4 @@
-name: ℹ️ 23- direct-downloader
+name: 23 ℹ️ direct-downloader
 
 on:
   workflow_dispatch:

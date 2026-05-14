@@ -1,4 +1,4 @@
-name: 🗑 6 UDL-3 Cleaner
+name: 06 🗑 UDL-3 Cleaner
 
 on:
   workflow_dispatch:

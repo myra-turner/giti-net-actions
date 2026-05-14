@@ -1,4 +1,4 @@
-name: ℹ️ 24- youtube-downloader
+name: 24 ℹ️ youtube-downloader
 
 on:
   workflow_dispatch:

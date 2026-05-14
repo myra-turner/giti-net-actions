@@ -1,4 +1,4 @@
-name: ✈️  11- Move File to Github
+name: 11 ✈️ Move File to Github
 
 on:
   workflow_dispatch:

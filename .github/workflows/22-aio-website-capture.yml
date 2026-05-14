@@ -1,4 +1,4 @@
-name: ℹ️ 22- website-capture
+name: 22 ℹ️ website-capture
 
 on:
   workflow_dispatch:

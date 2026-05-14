@@ -1,4 +1,4 @@
-name: ℹ️ 29- aio-cleaner
+name: 29 ℹ️ aio-cleaner
 on:
   workflow_dispatch:
     inputs:

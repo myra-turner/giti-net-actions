@@ -1,4 +1,4 @@
-name: 📝 2-Sort files
+name: 02 📝 Sort files
 
 on:
   workflow_dispatch:

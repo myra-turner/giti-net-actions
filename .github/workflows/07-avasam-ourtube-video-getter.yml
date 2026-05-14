@@ -1,4 +1,4 @@
-name: 🎯 7- Ourtube (youtube Downloader)
+name: 07 🎯 Ourtube (youtube Downloader)
 
 on:
   workflow_dispatch:

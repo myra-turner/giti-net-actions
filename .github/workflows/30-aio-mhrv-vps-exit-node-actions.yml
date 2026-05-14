@@ -1,4 +1,4 @@
-name: "ℹ️ 30- mhrv-vps-exit-node-actions"
+name: 30 ℹ️ mhrv-vps-exit-node-actions
 
 on:
   workflow_dispatch:

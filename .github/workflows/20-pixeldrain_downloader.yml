@@ -1,4 +1,4 @@
-name: "🇮🇷  20- Pixeldrain Downloader"
+name: 20 🇮🇷 Pixeldrain Downloader
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: ⬇️  01- Download from url
+name: 01 ⬇️ Download from url
 
 on:
   workflow_dispatch:

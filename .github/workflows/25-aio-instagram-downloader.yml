@@ -1,5 +1,4 @@
----
-name: ℹ️ 25- instagram-downloader
+name: 25 ℹ️ instagram-downloader
 
 on:
   workflow_dispatch:

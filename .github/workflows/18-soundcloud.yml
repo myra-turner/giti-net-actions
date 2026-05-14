@@ -1,4 +1,4 @@
-name: "🇮🇷  18- SoundCloud Downloader"
+name: 18 🇮🇷 SoundCloud Downloader
 
 on:
   workflow_dispatch:

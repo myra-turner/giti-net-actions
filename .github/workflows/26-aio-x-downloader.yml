@@ -1,5 +1,4 @@
----
-name: ℹ️ 26- x-downloader
+name: 26 ℹ️ x-downloader
 
 on:
   workflow_dispatch:

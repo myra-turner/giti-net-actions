@@ -1,4 +1,4 @@
-name: ℹ️ 28- google-play-downloader
+name: 28 ℹ️ google-play-downloader
 
 on:
   workflow_dispatch:
