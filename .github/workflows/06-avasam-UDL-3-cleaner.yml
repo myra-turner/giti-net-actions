@@ -1,4 +1,4 @@
-name: 🗑 3-Clean downloads folder
+name: 🗑 6 UDL-3 Cleaner
 
 on:
   workflow_dispatch:
@@ -27,99 +27,50 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Remove downloads folder from Git and recreate with README
+      - name: Clean and recreate downloads folder
         run: |
           BRANCH="${GITHUB_REF_NAME}"
 
           echo "AVASAM (https://avasam.ir) - Cleaning downloads folder"
           echo ""
 
-          # Check if downloads folder exists in git
           if [ -d "downloads" ]; then
-            echo "Removing downloads folder from Git tracking..."
-
-            # Use git rm to properly remove tracked files
-            # This stages the deletion for commit
+            echo "Removing downloads folder..."
             git rm -rf downloads/ 2>/dev/null || true
-
-            # Also remove any untracked files
-            rm -rf downloads 2>/dev/null || true
-
-            echo "Downloads folder removed from Git"
+            rm -rf downloads/ 2>/dev/null || true
           else
-            echo "Downloads folder doesn't exist, creating new one..."
+            echo "Downloads folder doesn't exist, will create it."
           fi
 
-          # Create fresh downloads folder
           mkdir -p downloads
+          printf '## empty\nfor start go Action tab and use left side workflows\n' > downloads/README.md
 
-          # IMPORTANT: Git doesn't track empty folders!
-          # We MUST add a file inside for Git to track the folder
-          {
-            echo "# Downloads"
-            echo ""
-            echo "---"
-            echo ""
-            echo "## NO FILE DOWNLOADED YET!"
-            echo ""
-            echo "Use the download workflows to add files here."
-            echo ""
-            echo "---"
-            echo ""
-            echo "*This tool created by [avasam.ir](https://avasam.ir)*"
-          } > downloads/README.md
+          git add -f downloads/README.md
 
-          echo "Created downloads/README.md"
-
-          # Stage the new README file
-          git add downloads/README.md
-
-          # Check if there are changes to commit
           if git diff --staged --quiet; then
-            echo ""
-            echo "No changes detected - downloads folder is already clean"
+            echo "No changes to commit."
             exit 0
           fi
 
-          # Commit the changes
           git commit -m "[AVASAM] Clean downloads folder [skip ci]"
 
-          echo ""
           echo "Pushing changes..."
 
-          # Push with retries
           RETRY=0
           MAX_RETRIES=5
           while [ $RETRY -lt $MAX_RETRIES ]; do
             RETRY=$((RETRY + 1))
 
-            # Fetch and rebase to avoid conflicts
             git fetch origin "$BRANCH" --quiet 2>/dev/null || true
             git rebase origin/"$BRANCH" 2>/dev/null || {
-              # If rebase fails, reset and try again
               git rebase --abort 2>/dev/null || true
               git reset --hard HEAD~1 2>/dev/null || true
               git pull --rebase origin "$BRANCH" 2>/dev/null || true
 
-              # Recreate our changes
+              rm -rf downloads/ 2>/dev/null || true
               mkdir -p downloads
-              git rm -rf downloads/ 2>/dev/null || true
-              rm -rf downloads 2>/dev/null || true
-              mkdir -p downloads
-              {
-                echo "# Downloads"
-                echo ""
-                echo "---"
-                echo ""
-                echo "## NO FILE DOWNLOADED YET!"
-                echo ""
-                echo "Use the download workflows to add files here."
-                echo ""
-                echo "---"
-                echo ""
-                echo "*This tool created by [avasam.ir](https://avasam.ir)*"
-              } > downloads/README.md
-              git add -A downloads/
+              printf '## empty\nfor start go Action tab and use left side workflows\n' > downloads/README.md
+              git add -f downloads/README.md
               git commit -m "[AVASAM] Clean downloads folder [skip ci]" 2>/dev/null || true
             }
 

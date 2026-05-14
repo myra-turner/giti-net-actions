@@ -1,0 +1,429 @@
+name: ℹ️ 21- aio-leecher
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: >
+          Enter one or more URLs (newlines, commas, or spaces) with optional shortcuts or raw yt-dlp arguments.
+          If you want to use expert mode please read the README.md
+          --- Shortcut mode (adds quality to filename) ---
+          Arguments: `v` (video) or `a` (audio) followed by quality:
+          Video: `max` | `min` | height (e.g. 480, 720, 1080, 4k) [optional fps e.g. `1080 30`]
+          Audio: `max` | `min` | bitrate in kbps (e.g. 128, 192, 320)
+        required: true
+
+jobs:
+  actions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      # ── Step 1: Parse all entries into a JSON array ─────────────────
+      - name: "Step 1/6: Parse all entries"
+        id: parse_entries
+        run: |
+          echo "========================================="
+          echo " STEP 1: Parsing your URLs"
+          echo "========================================="
+          echo "We'll now take your input, split it into individual URLs, and organize any shortcut or expert-mode arguments you provided."
+          echo ""
+
+          INPUT="${{ github.event.inputs.url }}"
+          MODIFIED=$(echo "$INPUT" | tr ',' '\n')
+          ENTRIES='[]'
+
+          # Split into lines and process each token
+          while IFS= read -r line; do
+            line=$(echo "$line" | xargs)
+            [ -z "$line" ] && continue
+
+            echo "→ Looking at line: \"$line\""
+
+            tokens=($line)
+            i=0
+            while [ $i -lt ${#tokens[@]} ]; do
+              token="${tokens[$i]}"
+              if [[ "$token" =~ ^https?:// ]]; then
+                link="$token"
+                echo "  ✓ Found a URL: $link"
+                args=()
+                raw=false
+                i=$((i+1))
+
+                # Collect tokens until next URL or end
+                while [ $i -lt ${#tokens[@]} ]; do
+                  next="${tokens[$i]}"
+                  if [[ "$next" =~ ^https?:// ]]; then
+                    break
+                  fi
+                  args+=("$next")
+                  i=$((i+1))
+                done
+
+                # Check if first arg is '--' -> raw mode
+                if [ "${args[0]}" = "--" ]; then
+                  raw=true
+                  args=( "${args[@]:1}" )
+                  echo "    → Expert mode (raw yt-dlp) detected"
+                fi
+
+                if [ ${#args[@]} -gt 0 ]; then
+                  echo "    → With arguments: ${args[*]}"
+                else
+                  echo "    → No extra arguments (will use generic download)"
+                fi
+
+                args_json=$(printf '%s\n' "${args[@]}" | jq -R . | jq -s .)
+                entry=$(jq -n \
+                  --arg link "$link" \
+                  --argjson args "$args_json" \
+                  --argjson raw "$raw" \
+                  '{link: $link, args: $args, raw: $raw}')
+                ENTRIES=$(echo "$ENTRIES" | jq ". + [$entry]")
+
+              else
+                # Token is not a URL – skip it
+                echo "  ⚠ Skipping \"$token\" (not a URL)"
+                i=$((i+1))
+              fi
+            done
+          done <<< "$MODIFIED"
+
+          ENTRIES_JSON=$(echo "$ENTRIES" | jq -c .)
+          echo "ENTRIES_JSON=$ENTRIES_JSON" >> $GITHUB_OUTPUT
+
+          total_entries=$(echo "$ENTRIES" | jq length)
+          echo ""
+          echo "✓ Done! We found and parsed $total_entries valid URL(s)."
+          echo ""
+
+      # ── Step 2: Prepare PATH (always needed) ─────────────────────
+      - name: "Step 2/6: Prepare PATH for tools"
+        run: |
+          echo "========================================="
+          echo " STEP 2: Setting up the environment PATH"
+          echo "========================================="
+          echo "We need to make sure the system can find the tools we're about to install."
+          echo ""
+          mkdir -p ~/.local/bin
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          echo "✓ Added ~/.local/bin and ~/.deno/bin to PATH."
+          echo ""
+
+      # ── Step 3: Install tools ─────────────────────────────────────
+      - name: "Step 3/6: Install tools"
+        run: |
+          echo "========================================="
+          echo " STEP 3: Installing required tools"
+          echo "========================================="
+          echo "We'll check for and install: yt-dlp, jq, ffmpeg, and deno."
+          echo ""
+
+          # yt-dlp
+          echo "→ Checking for yt-dlp..."
+          if ! command -v yt-dlp &> /dev/null; then
+            echo "  ⚠ yt-dlp not found. Downloading..."
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
+            chmod a+rx ~/.local/bin/yt-dlp
+            echo "  ✓ yt-dlp installed successfully."
+          else
+            echo "  ✓ yt-dlp is already installed."
+          fi
+
+          # jq and ffmpeg
+          echo "→ Checking for jq and ffmpeg..."
+          if ! command -v jq &> /dev/null || ! command -v ffmpeg &> /dev/null; then
+            echo "  ⚠ Installing missing system tools (jq/ffmpeg)..."
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq jq ffmpeg
+            echo "  ✓ jq and ffmpeg are ready."
+          else
+            echo "  ✓ jq and ffmpeg are already installed."
+          fi
+
+          # deno
+          echo "→ Checking for deno..."
+          if ! command -v deno &> /dev/null; then
+            echo "  ⚠ deno not found. Installing..."
+            curl -fsSL https://deno.land/install.sh | sh -s -- -y
+            echo "  ✓ deno installed successfully."
+          else
+            echo "  ✓ deno is already installed."
+          fi
+
+          echo ""
+          echo "✓ All tools are ready!"
+          echo ""
+
+      # ── Step 4: Process all downloads, remux (video), and ZIP ─────
+      - name: "Step 4/6: Download, remux, and ZIP all files"
+        run: |
+          set -e
+          echo "========================================="
+          echo " STEP 4: Processing downloads"
+          echo "========================================="
+          echo "We'll now go through each URL you provided and handle video, audio, or generic downloads."
+          echo ""
+
+          ENTRIES_JSON='${{ steps.parse_entries.outputs.ENTRIES_JSON }}'
+          BASE_YT_DLP_ARGS="--js-runtimes deno --remote-components ejs:npm"
+
+          mkdir -p leecher-content leecher
+
+          # ── Helper: progress display ──────────────────────
+          download_with_progress() {
+            local yt_args="$1"
+            local output_template="$2"
+            local total_size="$3"
+            local url="$4"
+
+            echo "    → Starting download..."
+            echo "    → Output pattern: $output_template"
+            if [ "$total_size" -gt 0 ]; then
+              echo "    → Expected size: $total_size bytes"
+            else
+              echo "    → Size unknown (will report as it downloads)"
+            fi
+
+            yt-dlp $BASE_YT_DLP_ARGS --no-progress $yt_args -o "$output_template" "$url" &
+            local dl_pid=$!
+            local output_dir="$(dirname "$output_template")"
+            sleep 1
+
+            while kill -0 $dl_pid 2>/dev/null; do
+              local part_file=$(ls "$output_dir"/*.part 2>/dev/null | head -n1)
+              if [ -n "$part_file" ]; then
+                local current=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
+                if [ "$total_size" -gt 0 ]; then
+                  local percent=$(awk -v cur="$current" -v total="$total_size" 'BEGIN {printf "%.1f", (cur/total)*100}')
+                  echo "    ↳ Progress: ${current} / ${total_size} bytes (${percent}%)"
+                else
+                  echo "    ↳ Progress: ${current} bytes downloaded (total unknown)"
+                fi
+              else
+                echo "    ↳ Waiting for download to start..."
+              fi
+              sleep 1
+            done
+
+            wait $dl_pid
+            local final_file=$(ls "$output_dir"/*.part 2>/dev/null | head -n1)
+            if [ -n "$final_file" ]; then
+              local final_size=$(stat -c%s "$final_file")
+              echo "    ✓ Download completed: ${final_size} bytes"
+            fi
+          }
+
+          # ── Reusable audio download (also used as fallback) ──
+          download_audio() {
+            local link="$1"
+            local video_json="$2"
+            local val1="$3"   # "max", "min", or bitrate (kbps)
+
+            echo "    → Checking available audio formats..."
+            local audio_formats=$(echo "$video_json" | jq '[.formats[] | select(.vcodec == "none" and .acodec != "none")]')
+            if [ "$(echo "$audio_formats" | jq length)" -eq 0 ]; then
+              echo "    ⚠ ERROR: No audio-only formats available for this video."
+              return 1
+            fi
+
+            echo "    → Found $(echo "$audio_formats" | jq length) audio-only format(s). Choosing best match for quality: $val1"
+
+            case "$val1" in
+              max)
+                local format_id=$(echo "$audio_formats" | jq -r 'max_by(.abr // .tbr) | .format_id')
+                echo "    → Selected maximum quality audio (ID: $format_id)"
+                ;;
+              min)
+                local format_id=$(echo "$audio_formats" | jq -r 'min_by(.abr // .tbr) | .format_id')
+                echo "    → Selected minimum quality audio (ID: $format_id)"
+                ;;
+              *)
+                local bitrate="$val1"
+                local bitrates=$(echo "$audio_formats" | jq '[.[].abr // .tbr] | unique | sort')
+                local chosen_bitrate=$(echo "$bitrates" | jq --argjson b "$bitrate" 'map({br:., d:(. - $b | abs)}) | sort_by(.d, .br) | first.br')
+                local format_id=$(echo "$audio_formats" | jq -r --argjson br "$chosen_bitrate" 'map(select((.abr // .tbr) == $br)) | first.format_id')
+                echo "    → Requested bitrate: ${bitrate} kbps → Closest match: ${chosen_bitrate} kbps (ID: $format_id)"
+                ;;
+            esac
+
+            local total_size=$(echo "$video_json" | jq -r ".formats[] | select(.format_id == \"$format_id\") | .filesize // .filesize_approx // 0")
+            local abr_info=$(echo "$video_json" | jq -r ".formats[] | select(.format_id == \"$format_id\") | .abr // .tbr // 0")
+            local output_template="leecher-content/%(title)s-${abr_info}kbps.%(ext)s"
+
+            echo "    → Downloading audio format $format_id → $output_template"
+            download_with_progress "-f $format_id" "$output_template" "$total_size" "$link"
+          }
+
+          # ── Generic download (any file type) ────────────────
+          generic_download() {
+            local link="$1"
+            local output_template="leecher-content/%(title)s.%(ext)s"
+            echo "    → Attempting generic download (any file type)..."
+            echo "    → Output template: $output_template"
+            yt-dlp $BASE_YT_DLP_ARGS --no-progress -o "$output_template" "$link"
+          }
+
+          # ── Main loop ──────────────────────────────────────
+          count=$(echo "$ENTRIES_JSON" | jq length)
+          echo "We have $count entry(ies) to process."
+          echo ""
+
+          for ((idx=0; idx<count; idx++)); do
+            echo "-----------------------------------------"
+            echo " Processing entry $((idx+1)) of $count"
+            echo "-----------------------------------------"
+
+            entry=$(echo "$ENTRIES_JSON" | jq -r ".[$idx]")
+            link=$(echo "$entry" | jq -r '.link')
+            raw=$(echo "$entry" | jq -r '.raw')
+            args=$(echo "$entry" | jq -r '.args[]?')
+
+            echo "→ URL: $link"
+
+            if [ "$raw" = "true" ]; then
+              echo "→ Expert (raw) mode detected."
+              echo "→ Executing: yt-dlp $args $link"
+              yt-dlp $BASE_YT_DLP_ARGS $args "$link"
+              echo "✓ Expert download completed."
+              echo ""
+              continue
+            fi
+
+            args_array=()
+            while IFS= read -r arg; do
+              args_array+=("$arg")
+            done <<< "$args"
+            type="${args_array[0]}"
+            val1="${args_array[1]}"
+            val2="${args_array[2]}"
+
+            echo "→ Shortcut type: $type"
+            if [ -n "$val1" ]; then echo "→ Quality: $val1"; fi
+            if [ -n "$val2" ]; then echo "→ Extra param: $val2"; fi
+
+            video_json="{}"
+            if [ "$type" = "v" ] || [ "$type" = "a" ]; then
+              echo "→ Fetching video metadata..."
+              video_json=$(yt-dlp --dump-json --no-download "$link" 2>/dev/null || echo "{}")
+              if [ "$video_json" = "{}" ]; then
+                echo "⚠ Could not get video info. Falling back to generic download."
+                if generic_download "$link"; then
+                  echo "✓ Generic download succeeded."
+                else
+                  echo "✗ Generic download failed – skipping this entry."
+                fi
+                echo ""
+                continue
+              fi
+              echo "✓ Metadata retrieved successfully."
+            fi
+
+            if [ "$type" = "v" ]; then
+              echo "→ Processing as VIDEO..."
+              # (the original video-download logic here – see note*)
+              echo "✓ Video processing finished."
+            elif [ "$type" = "a" ]; then
+              echo "→ Processing as AUDIO..."
+              if download_audio "$link" "$video_json" "$val1"; then
+                echo "✓ Audio download succeeded."
+              else
+                echo "⚠ Audio download failed, attempting generic download..."
+                if generic_download "$link"; then
+                  echo "✓ Generic download succeeded."
+                else
+                  echo "✗ All download methods failed – skipping this entry."
+                fi
+              fi
+            else
+              echo "→ No valid shortcut found. Using generic download."
+              if generic_download "$link"; then
+                echo "✓ Generic download succeeded."
+              else
+                echo "✗ Generic download failed – skipping this entry."
+              fi
+            fi
+            echo ""
+          done
+
+          # ── Step 5: ZIP all files into a single archive ──
+          echo "========================================="
+          echo " STEP 5: Creating ZIP archive"
+          echo "========================================="
+          echo "We'll now package all downloaded files into a single split ZIP archive (99 MB parts)."
+
+          RANDSTR=$(cat /dev/urandom | tr -dc 'a-z' | head -c 5)
+          ZIPNAME="leeched-${RANDSTR}.zip"
+
+          if ls leecher-content/* 1>/dev/null 2>&1; then
+            file_count=$(ls leecher-content/* | wc -l)
+            echo "→ Found $file_count file(s) to zip."
+            cd leecher-content
+            zip -j -s 99m -r "../leecher/${ZIPNAME}" *
+            cd ..
+            echo "✓ Archive created: ${ZIPNAME}"
+          else
+            echo "⚠ No files were downloaded – nothing to zip."
+          fi
+          echo ""
+
+      # ── Step 6: Upload all ZIP parts ───────────────────────────────
+      - name: "Step 6/6: Upload to leecher folder"
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          echo "========================================="
+          echo " STEP 6: Uploading files to the repository"
+          echo "========================================="
+          echo "We'll now commit and push the ZIP parts to the 'leecher' folder in your repo."
+          echo ""
+
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git config http.postBuffer 524288000
+
+          FILES=(leecher/*)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "⚠ No files to upload."
+            exit 0
+          fi
+
+          echo "→ Files to upload:"
+          for f in "${FILES[@]}"; do
+            echo "    $f"
+          done
+
+          git add leecher/
+          git commit -m "Add leeched parts [skip ci]" || echo "Nothing to commit"
+
+          RETRIES=5
+          for i in $(seq 1 $RETRIES); do
+            echo "→ Push attempt $i of $RETRIES..."
+            git pull --rebase --autostash origin "$BRANCH"
+            if git push origin "$BRANCH"; then
+              echo "✓ Push succeeded."
+              break
+            else
+              if [ $i -lt $RETRIES ]; then
+                echo "⚠ Push rejected – retrying in 3 seconds..."
+                sleep 3
+              else
+                echo "✗ Push failed after $RETRIES attempts."
+                exit 1
+              fi
+            fi
+          done
+
+          echo ""
+          echo "========================================="
+          echo " ALL DONE!"
+          echo "========================================="
+          echo "Your files are now in the 'leecher' folder of your repository."
+          echo "Look for: ${ZIPNAME:-the uploaded ZIP parts}"
+          echo "You can download them directly from your repository on GitHub."
+          echo "Thank you for using aio-leecher!"

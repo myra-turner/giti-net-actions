@@ -1,0 +1,82 @@
+name: ℹ️ 22- website-capture
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Full URL of the website to capture"
+        required: true
+        type: string
+
+permissions:
+  contents: write # needed to push the PDF back
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Node dependencies
+        run: |
+          npm init -y > /dev/null
+          npm install playwright pdf-lib
+
+      # Installs Chromium and required OS libraries
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # ADD THIS STEP – Ghostscript for merging without losing links
+      - name: Install Ghostscript
+        run: sudo apt-get update && sudo apt-get install -y ghostscript
+
+      - name: Capture, list URLs and merge PDFs
+        run: node .github/script/website-capture.js "${{ github.event.inputs.url }}"
+
+      # ── Upload to website folder (same robust push with retries) ──
+      - name: Upload to website folder
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git config http.postBuffer 524288000
+
+          mkdir -p website
+          mv output.pdf website/${FILENAME}
+
+          FILES=(website/*)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No files to upload."
+            exit 0
+          fi
+
+          git add website/
+          git commit -m "Add website capture for ${{ github.event.inputs.url }} [skip ci]" || echo "Nothing to commit"
+
+          RETRIES=5
+          for i in $(seq 1 $RETRIES); do
+            echo "Push attempt $i..."
+            git pull --rebase --autostash origin "$BRANCH"
+            if git push origin "$BRANCH"; then
+              echo "Push succeeded."
+              break
+            else
+              if [ $i -lt $RETRIES ]; then
+                echo "Push rejected, retrying in 3 seconds..."
+                sleep 3
+              else
+                echo "Push failed after $RETRIES attempts."
+                exit 1
+              fi
+            fi
+          done
+          echo "All files uploaded to the 'website' folder."

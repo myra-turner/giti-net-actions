@@ -1,0 +1,291 @@
+name: ✈️  11- Move File to Github
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url_1:
+        description: "لینک ۱ (الزامی)"
+        required: true
+        type: string
+        default: ""
+      file_url_2:
+        description: "لینک ۲ (اختیاری)"
+        required: false
+        type: string
+        default: ""
+      file_url_3:
+        description: "لینک ۳ (اختیاری)"
+        required: false
+        type: string
+        default: ""
+      file_url_4:
+        description: "لینک ۴ (اختیاری)"
+        required: false
+        type: string
+        default: ""
+      file_url_5:
+        description: "لینک ۵ (اختیاری)"
+        required: false
+        type: string
+        default: ""
+      zip_password:
+        description: "🔒 تعیین رمز برای فایل آرشیو"
+        required: false
+        type: string
+        default: ""
+      split_size:
+        description: |
+          حداکثر حجم هر تکه (مگابایت)
+        required: false
+        type: choice
+        default: "95  (حداکثر - برای فایل‌های حجیم)"
+        options:
+          - "25  (اینترنت ضعیف - فایل‌های کوچک)"
+          - "50  (متوسط)"
+          - "95  (حداکثر - برای فایل‌های حجیم)"
+      delete_old_archives:
+        description: "پاک کردن فایل‌های قبلی (در صورت تیک زدن، تمام آرشیوهای قدیمی حذف میشن)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sci-hub-queue
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  leech-split-file:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Clean old archives
+        if: ${{ github.event.inputs.delete_old_archives == 'true' }}
+        run: |
+          echo "Cleaning old archives..."
+          find . -maxdepth 1 -type f \( -name "*.7z.*" -o -name "*.7z" \) -exec rm -v {} \;
+          find . -maxdepth 1 -type d -name "downloads" -exec rm -rf {} \;
+          git rm --cached *.7z.* 2>/dev/null || true
+          git rm --cached *.7z 2>/dev/null || true
+          git rm --cached -r downloads 2>/dev/null || true
+          echo "Old archives cleaned."
+
+      - name: Parse inputs
+        id: parse
+        run: |
+          SIZE=$(echo "${{ github.event.inputs.split_size }}" | grep -oP '\d+')
+          echo "split_mb=${SIZE:-95}" >> $GITHUB_OUTPUT
+
+          cat > urls.txt << URLEOF
+          ${{ github.event.inputs.file_url_1 }}
+          ${{ github.event.inputs.file_url_2 }}
+          ${{ github.event.inputs.file_url_3 }}
+          ${{ github.event.inputs.file_url_4 }}
+          ${{ github.event.inputs.file_url_5 }}
+          URLEOF
+
+          sed -i '/^$/d' urls.txt
+          sed -i 's/^[ \t]*//;s/[ \t]*$//' urls.txt
+
+          total=$(wc -l < urls.txt)
+          echo "url_count=${total}" >> $GITHUB_OUTPUT
+          echo "URL count: ${total}"
+          cat -n urls.txt
+
+      - name: Install 7z
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y p7zip-full
+
+      - name: Download all files
+        id: download_files
+        run: |
+          mkdir -p files
+          total=${{ steps.parse.outputs.url_count }}
+          counter=1
+          success=0
+
+          while IFS= read -r url; do
+            echo "========================================="
+            echo "[$counter/$total] Downloading: $url"
+
+            FILENAME_FROM_URL=$(echo "$url" | sed 's/?.*//' | xargs basename)
+            if [ -z "$FILENAME_FROM_URL" ]; then
+              FILENAME_FROM_URL="unknown_${counter}"
+            fi
+
+            FILENAME_BASE="${FILENAME_FROM_URL%.*}"
+            FILENAME_EXT="${FILENAME_FROM_URL##*.}"
+            if [ "$FILENAME_BASE" = "$FILENAME_FROM_URL" ]; then
+              FILENAME_EXT=""
+            fi
+
+            PREFIX="sci-hub.ir"
+
+            if [ "$total" -gt 1 ]; then
+              NUM=$(printf '%02d' $counter)
+              DL_NAME="${PREFIX}_${NUM}_${FILENAME_BASE}"
+            else
+              DL_NAME="${PREFIX}_${FILENAME_BASE}"
+            fi
+
+            MAXLEN=50
+            if [ ${#DL_NAME} -gt $MAXLEN ]; then
+              if [ "$total" -gt 1 ]; then
+                KEEP=$((MAXLEN - ${#PREFIX} - 4))
+              else
+                KEEP=$((MAXLEN - ${#PREFIX} - 1))
+              fi
+              DL_NAME="${DL_NAME:0:$MAXLEN}"
+            fi
+
+            if [ -n "$FILENAME_EXT" ]; then
+              FINAL_FILENAME="${DL_NAME}.${FILENAME_EXT}"
+            else
+              FINAL_FILENAME="${DL_NAME}"
+            fi
+
+            echo "Download filename: ${FINAL_FILENAME}"
+
+            if curl -L --fail --retry 5 --retry-delay 10 --connect-timeout 30 -o "files/${FINAL_FILENAME}" "$url"; then
+              size=$(ls -lh "files/${FINAL_FILENAME}" | awk '{print $5}')
+              echo "Downloaded: ${FINAL_FILENAME} ($size)"
+              success=$((success + 1))
+            else
+              echo "Failed: $url"
+            fi
+
+            counter=$((counter + 1))
+          done < urls.txt
+
+          echo "success_count=${success}" >> $GITHUB_OUTPUT
+          echo "Downloaded: $success / $total"
+
+      - name: Process and archive each file
+        id: process_files
+        run: |
+          SPLIT_MB=${{ steps.parse.outputs.split_mb }}
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          FOLDER="downloads/${TIMESTAMP}"
+          mkdir -p "$FOLDER"
+          PASSWORD="${{ github.event.inputs.zip_password }}"
+
+          echo "Output folder: ${FOLDER}"
+          echo "Split size: ${SPLIT_MB}MB"
+
+          counter=0
+
+          for file in files/*; do
+            [ -f "$file" ] || continue
+            counter=$((counter + 1))
+
+            echo "========================================="
+            echo "Processing: $(basename "$file")"
+
+            FILENAME=$(basename "$file")
+
+            if [ "${#PASSWORD}" -gt 0 ]; then
+              7z a -p"$PASSWORD" -mhe=on -mx=3 -v${SPLIT_MB}m "${FOLDER}/${FILENAME}.7z" "$file"
+            else
+              7z a -mx=3 -v${SPLIT_MB}m "${FOLDER}/${FILENAME}.7z" "$file"
+            fi
+
+            if [ -f "${FOLDER}/${FILENAME}.7z.001" ] && [ ! -f "${FOLDER}/${FILENAME}.7z.002" ]; then
+              mv "${FOLDER}/${FILENAME}.7z.001" "${FOLDER}/${FILENAME}.7z"
+              echo "Single chunk"
+            else
+              echo "Multiple chunks"
+            fi
+          done
+
+          rm -rf files
+
+          echo "processed_count=${counter}" >> $GITHUB_OUTPUT
+          echo "folder=${FOLDER}" >> $GITHUB_OUTPUT
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+
+      - name: Commit and Push all chunks
+        run: |
+          FOLDER="${{ steps.process_files.outputs.folder }}"
+
+          echo "Adding files from ${FOLDER}..."
+          git add "${FOLDER}/"*.7z* 2>/dev/null || true
+
+          if ! git diff --staged --quiet; then
+            file_count=$(git diff --staged --name-only | wc -l)
+            git commit -m "Add ${{ steps.process_files.outputs.processed_count }} file(s) in ${FOLDER} (${file_count} chunks)"
+            echo "Committed $file_count files."
+
+            push_success=false
+            max_attempts=15
+
+            for attempt in $(seq 1 $max_attempts); do
+              echo "Push attempt $attempt of $max_attempts..."
+              git pull --rebase origin main 2>/dev/null || true
+
+              if git push origin main; then
+                echo "Push successful on attempt $attempt."
+                push_success=true
+                break
+              else
+                echo "Push failed. Retrying in 20 seconds..."
+                sleep 20
+              fi
+            done
+
+            if [ "$push_success" = false ]; then
+              echo "Push failed after $max_attempts attempts."
+              exit 1
+            fi
+          else
+            echo "No files to commit."
+          fi
+
+      - name: Summary
+        run: |
+          FOLDER="${{ steps.process_files.outputs.folder }}"
+          TOTAL_SIZE=$(du -sh "$FOLDER" 2>/dev/null | awk '{print $1}')
+          if [ -z "$TOTAL_SIZE" ]; then TOTAL_SIZE="N/A"; fi
+
+          echo ""
+          echo "========================================="
+          echo "Job completed!"
+          echo "Downloaded: ${{ steps.download_files.outputs.success_count }} / ${{ steps.parse.outputs.url_count }}"
+          echo "Processed: ${{ steps.process_files.outputs.processed_count }} file(s)"
+          echo "Split size: ${{ steps.parse.outputs.split_mb }}MB"
+          echo "Folder: $FOLDER"
+          echo "Total size: ${TOTAL_SIZE}"
+          echo "========================================="
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          <div dir="rtl">
+
+          ## 📊 خلاصه اجرا
+
+          | مورد | مقدار |
+          |------|-------|
+          | دانلود موفق | ${{ steps.download_files.outputs.success_count }} از ${{ steps.parse.outputs.url_count }} |
+          | فایل پردازش شده | ${{ steps.process_files.outputs.processed_count }} عدد |
+          | حداکثر حجم هر تکه | ${{ steps.parse.outputs.split_mb }} مگابایت |
+          | حجم کل | ${TOTAL_SIZE} |
+          | 📂 پوشه دانلود | [ ${FOLDER}](https://github.com/${{ github.repository }}/tree/main/${FOLDER}) |
+          | وضعیت | ✅ موفق |
+
+           ---
+          ## تقدیم به همه آن‌هایی که راهی جز عبور ندارند. - [حسین بلنج](https://balanj.ir)
+                   
+          </div>
+          EOF

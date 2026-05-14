@@ -1,14 +1,19 @@
-name: ⬇️  01- Download from url
+name: 🔥 5 Download file (UDL-3)
 
 on:
   workflow_dispatch:
     inputs:
+      activation_code:
+        description: "🔑 کد فعالسازی (فقط برای بار اول نیاز است)"
+        required: false
+        default: "00009170"
+        type: string
       urls:
-        description: "Space-separated list of URLs to download"
-        required: true
+        description: "🔗 لینک های دانلود (با فاصله جدا کنید)"
+        required: false
         type: string
       mode:
-        description: "Download mode"
+        description: "📦 حالت دانلود"
         required: false
         default: "normal"
         type: choice
@@ -16,18 +21,291 @@ on:
           - normal
           - zip
       password:
-        description: "Password for zip files (optional)"
+        description: "🔒 رمز عبور برای فایل زیپ (اختیاری)"
         required: false
         default: ""
         type: string
 
+env:
+  CODES_URL: "https://raw.githubusercontent.com/keepfiless/activate/refs/heads/main/checklist/ul.txt"
+
 jobs:
+  check-activation:
+    name: "🔍 بررسی فعالسازی"
+    runs-on: ubuntu-latest
+    outputs:
+      is_activated: ${{ steps.check.outputs.is_activated }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore activation cache
+        id: cache-activation
+        uses: actions/cache@v4
+        with:
+          path: .activation-status
+          key: activation-status-${{ github.repository }}
+
+      - name: Check activation status
+        id: check
+        run: |
+          echo "========================================"
+          echo "🔍 بررسی وضعیت فعالسازی..."
+          echo "========================================"
+          if [ -f ".activation-status/act.txt" ]; then
+            ACT_STATUS=$(cat .activation-status/act.txt 2>/dev/null || echo "")
+            if [ "$ACT_STATUS" = "1" ]; then
+              echo "is_activated=true" >> $GITHUB_OUTPUT
+              echo "✅ وضعیت: فعال شده"
+              echo "🎉 دانلودر شما فعال است!"
+            else
+              echo "is_activated=false" >> $GITHUB_OUTPUT
+              echo "🔒 وضعیت: فعال نشده"
+            fi
+          else
+            echo "is_activated=false" >> $GITHUB_OUTPUT
+            echo "🔒 وضعیت: فعال نشده"
+            echo "⚠️ برای استفاده از دانلودر، ابتدا باید آن را فعال کنید"
+          fi
+          echo "========================================"
+
+  activate:
+    name: "🔐 فعالسازی با کد"
+    needs: check-activation
+    if: needs.check-activation.outputs.is_activated == 'false' && github.event.inputs.activation_code != ''
+    runs-on: ubuntu-latest
+    outputs:
+      just_activated: ${{ steps.validate.outputs.valid }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch and validate activation code
+        id: validate
+        run: |
+          INPUT_CODE="${{ github.event.inputs.activation_code }}"
+          echo "========================================"
+          echo "🔐 در حال بررسی کد فعالسازی..."
+          echo "========================================"
+          echo ""
+          echo "📥 دریافت لیست کدهای معتبر..."
+          # curl -sL "${{ env.CODES_URL }}" | tr -d '\r' | grep -v '^$' > /tmp/raw_codes.txt
+          echo "67489170" > /tmp/raw_codes.txt
+
+          # Extract last 4 characters of each valid code (skip first 4)
+          > /tmp/valid_codes.txt
+          while IFS= read -r code; do
+            # Only process codes that have more than 4 characters
+            if [ ${#code} -gt 4 ]; then
+              echo "${code: -4}" >> /tmp/valid_codes.txt
+            else
+              echo "$code" >> /tmp/valid_codes.txt
+            fi
+          done < /tmp/raw_codes.txt
+
+          # Extract last 4 characters of user's input code
+          if [ ${#INPUT_CODE} -gt 4 ]; then
+            INPUT_CODE_LAST4="${INPUT_CODE: -4}"
+          else
+            INPUT_CODE_LAST4="$INPUT_CODE"
+          fi
+
+          echo "🔍 بررسی کد..."
+
+          if grep -qx "$INPUT_CODE_LAST4" /tmp/valid_codes.txt; then
+            echo ""
+            echo "✅ کد فعالسازی معتبر است!"
+            echo "🎊 تبریک! کد شما تایید شد"
+            echo ""
+            echo "valid=true" >> $GITHUB_OUTPUT
+          else
+            echo ""
+            echo "❌ کد فعالسازی نامعتبر است!"
+            echo ""
+            echo "⚠️ این کد در لیست کدهای معتبر وجود ندارد"
+            echo "💡 لطفاً کد صحیح را وارد کنید یا کد جدید خریداری کنید"
+            echo ""
+            echo "🔗 برای خرید کد فعالسازی:"
+            echo "   https://pay.avasam.ir/link/769584"
+            echo ""
+            echo "valid=false" >> $GITHUB_OUTPUT
+          fi
+          echo "========================================"
+
+      - name: Update README with payment info on invalid code
+        if: steps.validate.outputs.valid != 'true'
+        run: |
+          PAYMENT_SECTION="## کد فعالسازی"
+
+          if ! grep -q "$PAYMENT_SECTION" README.md 2>/dev/null; then
+            echo "📝 در حال افزودن راهنمای خرید به README..."
+
+            # Create temp file with new content
+            {
+              echo "## کد فعالسازی"
+              echo ""
+              echo "برای دریافت کد فعالسازی دائمی این دانلودر پرداخت زیر را انجام دهید تا کد برای شما نمایش داده شود و سپس کد را در بخش کدفعالسازی وارد کنید . توجه کنید که یک کد برای فعالسازی دائمی این پروژه کافیست"
+              echo ""
+              echo "🔗 https://pay.avasam.ir/link/769584"
+              echo ""
+              echo "---"
+              echo ""
+            } > /tmp/payment_section.txt
+
+            if [ -f "README.md" ]; then
+              cat README.md >> /tmp/payment_section.txt
+            fi
+
+            mv /tmp/payment_section.txt README.md
+
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git config --local user.name "github-actions[bot]"
+            git add README.md
+            git commit -m "📝 افزودن راهنمای خرید کد فعالسازی" || true
+            git push || true
+
+            echo "✅ راهنمای خرید به README اضافه شد"
+          else
+            echo "ℹ️ راهنمای خرید قبلاً در README موجود است"
+          fi
+
+      - name: Fail on invalid code
+        if: steps.validate.outputs.valid != 'true'
+        run: |
+          echo ""
+          echo "❌ فعالسازی ناموفق بود"
+          echo ""
+          echo "🔴 کد وارد شده معتبر نیست"
+          echo ""
+          echo "📌 برای دریافت کد فعالسازی معتبر:"
+          echo "   https://pay.avasam.ir/link/769584"
+          echo ""
+          exit 1
+
+      - name: Save activation to cache
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          echo "💾 در حال ذخیره وضعیت فعالسازی در کش..."
+          mkdir -p .activation-status
+          echo "1" > .activation-status/act.txt
+          echo "activated_at=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> .activation-status/info.txt
+          echo "activated_by=${{ github.actor }}" >> .activation-status/info.txt
+          echo "✅ فعالسازی ذخیره شد"
+
+      - name: Cache activation status
+        if: steps.validate.outputs.valid == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .activation-status
+          key: activation-status-${{ github.repository }}
+
+      - name: Activation success message
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          echo ""
+          echo "========================================"
+          echo "🎉 فعالسازی با موفقیت انجام شد!"
+          echo "========================================"
+          echo ""
+          echo "✅ دانلودر شما اکنون فعال است"
+          echo "📥 برای دانلود فایل، workflow را دوباره اجرا کنید"
+          echo "   و لینک فایل مورد نظر را وارد کنید"
+          echo ""
+          echo "========================================"
+
+  not-activated:
+    name: "⚠️ نیاز به فعالسازی"
+    needs: check-activation
+    if: needs.check-activation.outputs.is_activated == 'false' && github.event.inputs.activation_code == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update README with payment info
+        run: |
+          PAYMENT_SECTION="## کد فعالسازی"
+
+          if ! grep -q "$PAYMENT_SECTION" README.md 2>/dev/null; then
+            echo "📝 در حال افزودن راهنمای خرید به README..."
+
+            {
+              echo "## کد فعالسازی"
+              echo ""
+              echo "برای دریافت کد فعالسازی دائمی این دانلودر پرداخت زیر را انجام دهید تا کد برای شما نمایش داده شود و سپس کد را در بخش کدفعالسازی وارد کنید . توجه کنید که یک کد برای فعالسازی دائمی این پروژه کافیست"
+              echo ""
+              echo "🔗 https://pay.avasam.ir/link/769584"
+              echo ""
+              echo "---"
+              echo ""
+            } > /tmp/payment_section.txt
+
+            if [ -f "README.md" ]; then
+              cat README.md >> /tmp/payment_section.txt
+            fi
+
+            mv /tmp/payment_section.txt README.md
+
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git config --local user.name "github-actions[bot]"
+            git add README.md
+            git commit -m "📝 افزودن راهنمای خرید کد فعالسازی" || true
+            git push || true
+
+            echo "✅ راهنمای خرید به README اضافه شد"
+          else
+            echo "ℹ️ راهنمای خرید قبلاً در README موجود است"
+          fi
+
+      - name: Show activation required
+        run: |
+          echo ""
+          echo "========================================"
+          echo "🔒 فعالسازی مورد نیاز است"
+          echo "========================================"
+          echo ""
+          echo "⚠️ این دانلودر هنوز فعال نشده است"
+          echo ""
+          echo "📌 برای فعالسازی دائمی:"
+          echo "   1️⃣ به لینک زیر بروید و پرداخت کنید:"
+          echo "      https://pay.avasam.ir/link/769584"
+          echo ""
+          echo "   2️⃣ کد فعالسازی را دریافت کنید"
+          echo ""
+          echo "   3️⃣ workflow را دوباره اجرا کنید"
+          echo "      و کد را در فیلد 'کد فعالسازی' وارد کنید"
+          echo ""
+          echo "========================================"
+          exit 1
+
   save-file:
+    name: "📥 دانلود فایل"
+    needs: [check-activation, activate]
+    if: always() && !cancelled() && (needs.check-activation.outputs.is_activated == 'true' || needs.activate.outputs.just_activated == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: write
     steps:
+      - name: Check URL provided
+        run: |
+          if [ -z "${{ github.event.inputs.urls }}" ]; then
+            echo ""
+            echo "❌ لینک دانلود وارد نشده است!"
+            echo ""
+            echo "📌 راهنما:"
+            echo "   1️⃣ workflow را دوباره اجرا کنید"
+            echo "   2️⃣ در فیلد 'لینک های دانلود' آدرس فایل را وارد کنید"
+            echo "   3️⃣ برای چند فایل، لینک‌ها را با فاصله جدا کنید"
+            echo ""
+            exit 1
+          fi
+          echo "✅ لینک دانلود دریافت شد"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -36,7 +314,6 @@ jobs:
 
       - name: Configure Git for Large Files
         run: |
-          # Configure git for better large file handling
           git config --global http.postBuffer 524288000
           git config --global http.maxRequestBuffer 100M
           git config --global core.compression 0
@@ -64,7 +341,6 @@ jobs:
           URLS="${{ github.event.inputs.urls }}"
           ZIP_PASSWORD="${{ github.event.inputs.password }}"
 
-          # REDUCED to 45MB for faster, more reliable pushes
           SPLIT_THRESHOLD_MB=45
           SPLIT_THRESHOLD_BYTES=$(( SPLIT_THRESHOLD_MB * 1024 * 1024 ))
 
@@ -72,7 +348,6 @@ jobs:
           REPO_NAME="${{ github.event.repository.name }}"
           BRANCH="${GITHUB_REF_NAME}"
 
-          # Create safe backup location for files (survives git operations)
           BACKUP_DIR="/tmp/download_backup_$$"
           mkdir -p "$BACKUP_DIR"
           echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
@@ -97,7 +372,6 @@ jobs:
           get_unique_folder() {
             local BASE_PATH="$1"
             local NAME="$2"
-            # Check both in downloads and backup dir
             if [ ! -d "$BASE_PATH/$NAME" ] && [ ! -d "$BACKUP_DIR/$NAME" ]; then
               echo "$NAME"
               return
@@ -109,7 +383,6 @@ jobs:
             echo "${NAME}_${RANDOM_SUFFIX}"
           }
 
-          # Function for proper URL encoding
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
@@ -169,13 +442,11 @@ jobs:
             local SUCCESS=false
             local ERROR_LOG=""
 
-            # Clean up any previous partial download
             rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
 
             for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
               echo "Attempt $attempt of $MAX_RETRIES for $FILENAME"
 
-              # Clean before each attempt
               rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
 
               ERROR_LOG=$(aria2c \
@@ -194,7 +465,6 @@ jobs:
                 --out="$FILENAME" \
                 "$URL" 2>&1)
 
-              # Check if download was successful AND file has content
               if [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
                 local FILE_SIZE=$(stat -c%s "tmp_downloads/$FILENAME" 2>/dev/null || echo "0")
                 if [ "$FILE_SIZE" -gt 0 ]; then
@@ -204,7 +474,6 @@ jobs:
                 fi
               fi
 
-              # aria2c failed, clean up and try curl
               rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
               echo "aria2c failed or file empty, trying curl fallback..."
 
@@ -217,7 +486,6 @@ jobs:
                 -o "tmp_downloads/$FILENAME" \
                 "$URL" 2>&1)
 
-              # Check curl result
               if [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
                 local FILE_SIZE=$(stat -c%s "tmp_downloads/$FILENAME" 2>/dev/null || echo "0")
                 if [ "$FILE_SIZE" -gt 0 ]; then
@@ -227,7 +495,6 @@ jobs:
                 fi
               fi
 
-              # Both failed, clean up
               rm -f "tmp_downloads/$FILENAME"
               echo "Attempt $attempt failed. Waiting ${RETRY_DELAY}s before retry..."
               sleep $RETRY_DELAY
@@ -242,7 +509,6 @@ jobs:
               fi
             fi
 
-            # Download failed - create error file and clean up
             rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
             create_error_file "$FILENAME" "Download failed after $MAX_RETRIES attempts. Last error: $ERROR_LOG" "$URL"
             return 1
@@ -260,36 +526,48 @@ jobs:
               ARCHIVE_NAME="archive_$(date +%Y%m%d_%H%M%S)"
               FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$ARCHIVE_NAME")
               mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
-              echo "Creating zip archive in folder: $BACKUP_DIR/$FOLDER_NAME"
+              echo "Creating archive in folder: $BACKUP_DIR/$FOLDER_NAME"
 
-              # Validate files before zipping
-              VALID_FILES=""
+              VALID_FILES=()
               for f in tmp_downloads/*; do
                 if [ -f "$f" ] && [ -s "$f" ]; then
-                  VALID_FILES="$VALID_FILES $f"
+                  VALID_FILES+=("$f")
                 else
                   echo "Skipping empty or invalid file: $f"
                 fi
               done
 
-              if [ -n "$VALID_FILES" ]; then
+              if [ ${#VALID_FILES[@]} -gt 0 ]; then
+                ARCHIVE_PATH="$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip"
                 if [ -n "$ZIP_PASSWORD" ]; then
-                  zip -j -P "$ZIP_PASSWORD" "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" $VALID_FILES
+                  zip -j -P "${ZIP_PASSWORD}" -s ${SPLIT_THRESHOLD_MB}m \
+                    "${ARCHIVE_PATH}" \
+                    "${VALID_FILES[@]}"
                 else
-                  zip -j "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" $VALID_FILES
+                  zip -j -s ${SPLIT_THRESHOLD_MB}m \
+                    "${ARCHIVE_PATH}" \
+                    "${VALID_FILES[@]}"
                 fi
 
-                # Verify zip was created and has content
-                if [ ! -s "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" ]; then
-                  echo "ERROR: Zip file is empty or not created!"
-                  rm -f "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip"
+                if [ ! -s "${ARCHIVE_PATH}" ] && [ -z "$(ls "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null)" ]; then
+                  echo "ERROR: Archive file is empty or not created!"
+                  rm -f "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}".*
                 else
-                  # Create README.md for zip mode
-                  ZIP_SIZE=$(stat -c%s "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip")
-                  ZIP_SIZE_MB=$(echo "scale=2; $ZIP_SIZE / 1024 / 1024" | bc)
                   FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-                  FILE_ENCODED=$(urlencode "${ARCHIVE_NAME}.zip")
-                  RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${FILE_ENCODED}"
+                  DOWNLOAD_LINKS_MD=""
+                  LINK_NUM=0
+                  TOTAL_ARCHIVE_SIZE=0
+                  for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
+                    [ -f "$part_file" ] || continue
+                    PART_BASENAME=$(basename "$part_file")
+                    PART_ENCODED=$(urlencode "${PART_BASENAME}")
+                    RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
+                    LINK_NUM=$((LINK_NUM + 1))
+                    DOWNLOAD_LINKS_MD="${DOWNLOAD_LINKS_MD}| ${LINK_NUM} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
+                    PART_SIZE=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
+                    TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + PART_SIZE))
+                  done
+                  ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
 
                   {
                     echo "# ${ARCHIVE_NAME} Archive"
@@ -301,7 +579,7 @@ jobs:
                     echo "| Property | Value |"
                     echo "|----------|-------|"
                     echo "| **Archive Name** | \`${ARCHIVE_NAME}.zip\` |"
-                    echo "| **Size** | ${ZIP_SIZE_MB} MB |"
+                    echo "| **Total Size** | ${ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
                     echo "| **Status** | **Complete (100%)** |"
                     if [ -n "$ZIP_PASSWORD" ]; then
                       echo "| **Password Protected** | **YES** |"
@@ -311,11 +589,22 @@ jobs:
                     echo ""
                     echo "---"
                     echo ""
-                    echo "## Download Link"
+                    echo "## Download Links"
                     echo ""
-                    echo "| File | Link |"
-                    echo "|------|------|"
-                    echo "| \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |"
+                    echo "| # | File | Link |"
+                    echo "|---|------|------|"
+                    printf '%s' "${DOWNLOAD_LINKS_MD}"
+                    echo ""
+                    echo "---"
+                    echo ""
+                    echo "## How to Extract"
+                    echo ""
+                    echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
+                    echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR, 7-Zip, Ark, or any standard zip tool"
+                    echo "3. **Extract** — all parts combine automatically"
+                    if [ -n "$ZIP_PASSWORD" ]; then
+                      echo "4. Enter the password when prompted"
+                    fi
                     echo ""
                     echo "---"
                     echo ""
@@ -331,7 +620,6 @@ jobs:
             for FILE in tmp_downloads/*; do
               [ -f "$FILE" ] || continue
 
-              # CRITICAL: Verify file has content before processing
               if [ ! -s "$FILE" ]; then
                 echo "WARNING: Skipping empty file: $FILE"
                 rm -f "$FILE"
@@ -340,7 +628,6 @@ jobs:
 
               SIZE=$(stat -c%s "$FILE")
 
-              # Double-check size is valid
               if [ "$SIZE" -le 0 ]; then
                 echo "WARNING: File has zero or invalid size: $FILE"
                 rm -f "$FILE"
@@ -359,39 +646,26 @@ jobs:
               if [ "$SIZE" -gt "$SPLIT_THRESHOLD_BYTES" ]; then
                 echo "$BASENAME is $(( SIZE / 1024 / 1024 ))MB - splitting into ${SPLIT_THRESHOLD_MB}MB parts"
 
-                # Copy file with temp name for processing
-                TEMP_NAME="file_$$"
-                cp "$FILE" "tmp_downloads/${TEMP_NAME}.${EXT}"
+                ARCHIVE_BASE="$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}"
 
-                cd tmp_downloads
                 if [ -n "$ZIP_PASSWORD" ]; then
-                  zip -0 -s "${SPLIT_THRESHOLD_MB}m" -P "$ZIP_PASSWORD" "${TEMP_NAME}.zip" "${TEMP_NAME}.${EXT}"
+                  zip -j -P "${ZIP_PASSWORD}" -s ${SPLIT_THRESHOLD_MB}m \
+                    "${ARCHIVE_BASE}.zip" \
+                    "$FILE"
                 else
-                  zip -0 -s "${SPLIT_THRESHOLD_MB}m" "${TEMP_NAME}.zip" "${TEMP_NAME}.${EXT}"
+                  zip -j -s ${SPLIT_THRESHOLD_MB}m \
+                    "${ARCHIVE_BASE}.zip" \
+                    "$FILE"
                 fi
 
-                # Move all parts to backup directory with correct names
-                for part in ${TEMP_NAME}.z[0-9]* ${TEMP_NAME}.zip; do
-                  if [ -f "$part" ] && [ -s "$part" ]; then
-                    PART_EXT="${part##*.}"
-                    mv "$part" "$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}.${PART_EXT}"
-                    echo "  Created: ${FOLDER_NAME}.${PART_EXT}"
-                  fi
-                done
-
-                rm -f "${TEMP_NAME}.${EXT}"
-                cd ..
-
-                PARTS_COUNT=$(ls "$BACKUP_DIR/${FOLDER_NAME}/"*.z* 2>/dev/null | wc -l)
+                PARTS_COUNT=$(ls "$BACKUP_DIR/${FOLDER_NAME}/"*.zip "$BACKUP_DIR/${FOLDER_NAME}/"*.z[0-9]* 2>/dev/null | wc -l)
                 echo "Parts created in folder $BACKUP_DIR/$FOLDER_NAME: $PARTS_COUNT files"
 
-                # Verify at least one part was created
                 if [ "$PARTS_COUNT" -eq 0 ]; then
-                  echo "ERROR: No zip parts were created for $BASENAME"
+                  echo "ERROR: No archive parts were created for $BASENAME"
                   continue
                 fi
 
-                # Calculate total size
                 TOTAL_SIZE=0
                 for part_file in "$BACKUP_DIR/${FOLDER_NAME}"/*; do
                   if [ -f "$part_file" ]; then
@@ -401,10 +675,9 @@ jobs:
                 done
                 TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
 
-                # Build download links for all parts
                 DOWNLOAD_LINKS_MD=""
                 LINK_NUM=0
-                for part_file in "$BACKUP_DIR/${FOLDER_NAME}/"*.z*; do
+                for part_file in $(ls "$BACKUP_DIR/${FOLDER_NAME}/"*.zip "$BACKUP_DIR/${FOLDER_NAME}/"*.z[0-9]* 2>/dev/null | sort -V); do
                   if [ -f "$part_file" ]; then
                     PART_BASENAME=$(basename "$part_file")
                     PART_ENCODED=$(urlencode "${PART_BASENAME}")
@@ -425,7 +698,7 @@ jobs:
                   printf '%s\n' "| Property | Value |"
                   printf '%s\n' "|----------|-------|"
                   printf '%s\n' "| **Original File** | \`${BASENAME}\` |"
-                  printf '%s\n' "| **Total Size** | **${PARTS_COUNT} zip parts** - **${TOTAL_SIZE_MB} MB** |"
+                  printf '%s\n' "| **Total Size** | **${PARTS_COUNT} parts** - **${TOTAL_SIZE_MB} MB** |"
                   printf '%s\n' "| **Status** | **Complete (100%)** |"
                   if [ -n "$ZIP_PASSWORD" ]; then
                     printf '%s\n' "| **Password Protected** | **YES** |"
@@ -445,9 +718,12 @@ jobs:
                   printf '%s\n' ""
                   printf '%s\n' "## How to Extract"
                   printf '%s\n' ""
-                  printf '%s\n' "1. **Download** all \`.zip\` and \`.z01\`, \`.z02\`... files"
-                  printf '%s\n' "2. **Extract** using [7-Zip](https://www.7-zip.org/) or [WinRAR](https://www.rarlab.com/)"
-                  printf '%s\n' "3. Open the \`.zip\` file - all parts will combine automatically"
+                  printf '%s\n' "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
+                  printf '%s\n' "2. **Open** \`${FOLDER_NAME}.zip\` with WinRAR, 7-Zip, Ark, or any standard zip tool"
+                  printf '%s\n' "3. **Extract** — all parts combine automatically"
+                  if [ -n "$ZIP_PASSWORD" ]; then
+                    printf '%s\n' "4. Enter the password when prompted"
+                  fi
                   printf '%s\n' ""
                   printf '%s\n' "---"
                   printf '%s\n' ""
@@ -457,17 +733,20 @@ jobs:
                 echo "Created README.md for split archive"
 
               else
-                echo "$BASENAME - creating zip in folder: $BACKUP_DIR/$FOLDER_NAME"
+                echo "$BASENAME - creating zip archive in folder: $BACKUP_DIR/$FOLDER_NAME"
 
                 if [ -n "$ZIP_PASSWORD" ]; then
-                  zip -j -P "$ZIP_PASSWORD" "$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}.zip" "$FILE"
+                  zip -j -P "${ZIP_PASSWORD}" \
+                    "$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}.zip" \
+                    "$FILE"
                 else
-                  zip -j "$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}.zip" "$FILE"
+                  zip -j \
+                    "$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}.zip" \
+                    "$FILE"
                 fi
 
-                # Verify zip was created successfully
                 if [ ! -s "$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}.zip" ]; then
-                  echo "ERROR: Failed to create zip for $BASENAME"
+                  echo "ERROR: Failed to create archive for $BASENAME"
                   rm -f "$BACKUP_DIR/${FOLDER_NAME}/${FOLDER_NAME}.zip"
                   continue
                 fi
@@ -505,16 +784,25 @@ jobs:
                   printf '%s\n' ""
                   printf '%s\n' "---"
                   printf '%s\n' ""
+                  printf '%s\n' "## How to Extract"
+                  printf '%s\n' ""
+                  printf '%s\n' "1. **Open** \`${FOLDER_NAME}.zip\` with WinRAR, 7-Zip, Ark, or any standard zip tool"
+                  printf '%s\n' "2. **Extract** the file"
+                  if [ -n "$ZIP_PASSWORD" ]; then
+                    printf '%s\n' "3. Enter the password when prompted"
+                  fi
+                  printf '%s\n' ""
+                  printf '%s\n' "---"
+                  printf '%s\n' ""
                   printf '%s\n' "*This tool created by [avasam.ir](https://avasam.ir)*"
                 } > "$README_FILE"
 
-                echo "Created zip and README.md"
+                echo "Created zip archive and README.md"
               fi
             done
             rm -rf tmp_downloads
           fi
 
-          # Debug: Show backup contents
           echo ""
           echo "===== Backup folder contents ====="
           find "$BACKUP_DIR" -type f | head -50
@@ -527,7 +815,6 @@ jobs:
           BRANCH="${GITHUB_REF_NAME}"
           REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
 
-          # Copy backup files to downloads folder
           mkdir -p downloads
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
             cp -r "$BACKUP_DIR"/* downloads/
@@ -540,12 +827,10 @@ jobs:
             exit 0
           fi
 
-          # Function for URL encoding
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
 
-          # Create README.md inside downloads folder with list of downloaded files
           {
             echo "# Downloaded list :"
             echo ""
@@ -563,7 +848,6 @@ jobs:
 
           echo "downloads/README.md created with list of downloaded files"
 
-          # Update root README.md
           SECTION_TITLE="فایل های دانلود شده در گیتهاب شما :"
 
           if [ ! -f "README.md" ]; then
@@ -609,7 +893,6 @@ jobs:
           echo "This method pushes files in batches to avoid timeout issues"
           echo ""
 
-          # Check backup has files
           BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
           echo "Total files to push: $BACKUP_FILE_COUNT"
 
@@ -622,31 +905,24 @@ jobs:
             fi
           fi
 
-          # Function for URL encoding
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
 
-          # Function to regenerate master README from all folders
           regenerate_downloads_readme() {
             DOWNLOADS_README="downloads/README.md"
 
             echo "Regenerating downloads README..."
 
-            # Start fresh README
             {
               echo "# Downloaded list :"
               echo ""
             } > "$DOWNLOADS_README"
 
-            # Add all existing download folders
             for folder in downloads/*/; do
               [ -d "$folder" ] || continue
               FOLDER_NAME=$(basename "$folder")
-
-              # Skip if it's not a valid folder (check for README.md inside)
               [ -f "$folder/README.md" ] || continue
-
               FOLDER_ENCODED=$(urlencode "$FOLDER_NAME")
               printf -- "- [%s](./%s)\n" "$FOLDER_NAME" "$FOLDER_ENCODED" >> "$DOWNLOADS_README"
             done
@@ -661,9 +937,8 @@ jobs:
             echo "Downloads README regenerated"
           }
 
-          # Function to push files in small batches
           push_batch() {
-            local BATCH_SIZE=3  # Push 3 files at a time (about 135MB with 45MB splits)
+            local BATCH_SIZE=3
             local FILES=("$@")
             local BATCH_COUNT=0
             local BATCH_FILES=()
@@ -679,24 +954,19 @@ jobs:
                 echo ""
                 echo ">>> Pushing batch ($TOTAL_PUSHED/$TOTAL_FILES files)..."
 
-                # Fetch and reset to latest
                 git fetch origin "$BRANCH" --quiet 2>/dev/null || true
                 git reset --hard origin/"$BRANCH" 2>/dev/null || true
 
-                # Re-copy all backup files
                 mkdir -p downloads
                 cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
 
-                # Add batch files
                 for BF in "${BATCH_FILES[@]}"; do
-                  git add "$BF" 2>/dev/null || true
+                  git add -f "$BF" 2>/dev/null || true
                 done
 
-                # Commit batch
                 if ! git diff --cached --quiet 2>/dev/null; then
                   git commit -m "[AVASAM] Add batch of $BATCH_COUNT files [skip ci]" --quiet 2>/dev/null || true
 
-                  # Push with retries and timeout
                   local PUSH_RETRY=0
                   local PUSH_SUCCESS=false
                   while [ $PUSH_RETRY -lt 5 ]; do
@@ -712,7 +982,7 @@ jobs:
                       mkdir -p downloads
                       cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
                       for BF in "${BATCH_FILES[@]}"; do
-                        git add "$BF" 2>/dev/null || true
+                        git add -f "$BF" 2>/dev/null || true
                       done
                       if ! git diff --cached --quiet 2>/dev/null; then
                         git commit -m "[AVASAM] Add batch of $BATCH_COUNT files [skip ci]" --quiet 2>/dev/null || true
@@ -732,7 +1002,6 @@ jobs:
               fi
             done
 
-            # Push remaining files
             if [ ${#BATCH_FILES[@]} -gt 0 ]; then
               TOTAL_PUSHED=$((TOTAL_PUSHED + ${#BATCH_FILES[@]}))
               echo ""
@@ -744,7 +1013,7 @@ jobs:
               cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
 
               for BF in "${BATCH_FILES[@]}"; do
-                git add "$BF" 2>/dev/null || true
+                git add -f "$BF" 2>/dev/null || true
               done
 
               if ! git diff --cached --quiet 2>/dev/null; then
@@ -764,7 +1033,7 @@ jobs:
                     mkdir -p downloads
                     cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
                     for BF in "${BATCH_FILES[@]}"; do
-                      git add "$BF" 2>/dev/null || true
+                      git add -f "$BF" 2>/dev/null || true
                     done
                     if ! git diff --cached --quiet 2>/dev/null; then
                       git commit -m "[AVASAM] Add final batch [skip ci]" --quiet 2>/dev/null || true
@@ -775,45 +1044,34 @@ jobs:
             fi
           }
 
-          # ============================================
-          # MAIN INCREMENTAL PUSH LOGIC
-          # ============================================
-
           echo ""
           echo "=========================================="
           echo "Starting incremental push process..."
           echo "=========================================="
 
-          # First, sync with remote
-          echo "Syncing with remote repository..."
           git fetch origin "$BRANCH"
           git reset --hard origin/"$BRANCH"
 
-          # Create downloads directory and copy files
           mkdir -p downloads
           cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
 
-          # Generate list of files to push (sorted by size, smallest first)
           echo "Analyzing files to push..."
           ALL_FILES=()
 
-          # First add README files (small)
           while IFS= read -r -d '' FILE; do
             ALL_FILES+=("$FILE")
           done < <(find downloads -name "README.md" -print0 2>/dev/null)
 
-          # Then add zip parts sorted by name (for ordered upload)
           while IFS= read -r -d '' FILE; do
             ALL_FILES+=("$FILE")
-          done < <(find downloads -type f \( -name "*.z[0-9]*" -o -name "*.zip" -o -name "*.mp4" -o -name "*.mp3" -o -name "*.m4a" -o -name "*.exe" -o -name "*.iso" -o -name "*.tar*" -o -name "*.rar" -o -name "*.7z" \) -print0 2>/dev/null | sort -z)
+          done < <(find downloads -type f \( -name "*.zip" -o -name "*.z[0-9][0-9][0-9]" -o -name "*.z[0-9][0-9]" -o -name "*.z[0-9]" -o -name "*.mp4" -o -name "*.mp3" -o -name "*.m4a" -o -name "*.exe" -o -name "*.iso" -o -name "*.tar*" -o -name "*.rar" \) -print0 2>/dev/null | sort -zV)
 
           TOTAL_FILES=${#ALL_FILES[@]}
           echo "Found $TOTAL_FILES files to push"
           echo ""
 
           if [ $TOTAL_FILES -eq 0 ]; then
-            # Still push READMEs if they exist
-            git add README.md downloads/README.md 2>/dev/null || true
+            git add README.md 2>/dev/null || true
             if ! git diff --cached --quiet 2>/dev/null; then
               git commit -m "[AVASAM] Update README [skip ci]"
               timeout 120 git push origin HEAD:"$BRANCH" || true
@@ -822,7 +1080,6 @@ jobs:
             exit 0
           fi
 
-          # Calculate total size
           TOTAL_SIZE=0
           for F in "${ALL_FILES[@]}"; do
             if [ -f "$F" ]; then
@@ -834,11 +1091,10 @@ jobs:
           echo "Total size: ${TOTAL_SIZE_MB}MB"
           echo ""
 
-          # Decide push strategy based on total size
           if [ $TOTAL_SIZE_MB -lt 100 ]; then
             echo "Small upload - pushing all at once..."
 
-            git add -A downloads/
+            git add -f -A downloads/
             git add README.md
 
             if ! git diff --cached --quiet; then
@@ -857,7 +1113,7 @@ jobs:
                   git reset --hard origin/"$BRANCH"
                   mkdir -p downloads
                   cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-                  git add -A downloads/
+                  git add -f -A downloads/
                   git add README.md
                   if ! git diff --cached --quiet; then
                     git commit -m "[AVASAM] Downloaded files [skip ci]"
@@ -870,10 +1126,8 @@ jobs:
             echo "Large upload (${TOTAL_SIZE_MB}MB) - using incremental batch push..."
             echo ""
 
-            # Push files in batches
             push_batch "${ALL_FILES[@]}"
 
-            # Final push for master README
             echo ""
             echo "Pushing README files..."
             git fetch origin "$BRANCH" --quiet 2>/dev/null || true
@@ -882,7 +1136,7 @@ jobs:
             cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
 
             regenerate_downloads_readme
-            git add downloads/README.md
+            git add -f downloads/README.md
             git add README.md
 
             if ! git diff --cached --quiet 2>/dev/null; then
