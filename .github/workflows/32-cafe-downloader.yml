@@ -1,0 +1,179 @@
+name: 32 ℹ️ Cafe Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "List of URLs separated by space"
+        required: true
+        type: string
+      password:
+        description: "Password for ZIP (optional)"
+        required: false
+        type: string
+        default: ""
+      zip_max_size:
+        description: "Max ZIP size in MB"
+        required: false
+        type: number
+        default: 50
+      option:
+        description: "Delete previous downloads folder?"
+        required: false
+        type: boolean
+        default: false
+      quality:
+        description: "Preferred quality"
+        required: false
+        type: choice
+        default: "720"
+        options:
+          - "240"
+          - "480"
+          - "720"
+          - "1080"
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure Git for large files
+        run: |
+          git config http.postBuffer 524288000
+          git config http.maxRequestBuffer 1000M
+          git config core.compression 0
+          git config pack.windowMemory "1000m"
+          git config pack.packSizeLimit "1000m"
+          git config pack.threads "1"
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y curl wget unzip zip python3 python3-pip jq
+          pip3 install requests beautifulsoup4 aria2
+
+      - name: Clean previous downloads if option enabled
+        if: ${{ github.event.inputs.option == 'true' }}
+        run: |
+          rm -rf downloads
+          mkdir -p downloads
+
+      - name: Ensure downloads folder exists
+        run: mkdir -p downloads
+
+      - name: Process URLs
+        env:
+          URLS: ${{ github.event.inputs.urls }}
+          PASSWORD: ${{ github.event.inputs.password }}
+          ZIP_MAX: ${{ github.event.inputs.zip_max_size }}
+          QUALITY: ${{ github.event.inputs.quality }}
+        run: |
+          IFS=' ' read -ra LINK_ARRAY <<< "$URLS"
+
+          for URL in "${LINK_ARRAY[@]}"; do
+            ID=$(echo "$URL" | grep -oE '[0-9]+/?$' | tr -d '/')
+            PAGE="page_$ID.html"
+
+            curl -L --retry 5 --retry-delay 2 -o "$PAGE" "$URL" || continue
+
+            VIDEO_URL=$(python3 <<EOF
+import re, sys
+from bs4 import BeautifulSoup
+
+html = open("$PAGE").read()
+soup = BeautifulSoup(html, "html.parser")
+
+preferred = "$QUALITY"
+sources = {}
+
+for s in soup.select("video#main_video source"):
+    q = s.get("title","").replace("p","")
+    if q.isdigit():
+        sources[int(q)] = s["src"]
+
+for a in soup.select("ul.download_formats a"):
+    txt = a.text
+    m = re.search(r'(\d+)p', txt)
+    if m:
+        sources[int(m.group(1))] = a["href"]
+
+if not sources:
+    sys.exit(0)
+
+preferred_q = int(preferred)
+available = sorted(sources.keys(), reverse=True)
+
+chosen = preferred_q if preferred_q in sources else available[0]
+print(sources[chosen])
+EOF
+)
+
+            [[ -z "$VIDEO_URL" ]] && continue
+
+            OUTFILE="video_$ID.mp4"
+
+            curl -L --retry 5 --retry-delay 2 -o "$OUTFILE" "$VIDEO_URL" || \
+            wget -O "$OUTFILE" "$VIDEO_URL" || \
+            python3 - <<PYEOF
+import requests
+url="$VIDEO_URL"
+out="$OUTFILE"
+try:
+    r=requests.get(url,stream=True,timeout=10)
+    with open(out,"wb") as f:
+        for chunk in r.iter_content(1024*1024):
+            f.write(chunk)
+except:
+    pass
+PYEOF
+            [[ -s "$OUTFILE" ]] || \
+            python3 - <<PYEOF
+import aria2
+import time
+
+url="$VIDEO_URL"
+out="$OUTFILE"
+
+client = aria2.Aria2RPC()
+gid = client.addUri([url], {"out": out})
+
+while True:
+    status = client.tellStatus(gid)
+    if status["status"] in ("complete", "error", "removed"):
+        break
+    time.sleep(1)
+PYEOF
+
+            [[ ! -s "$OUTFILE" ]] && continue
+
+            ZIPFILE="downloads/${ID}.zip"
+            SPLIT_SIZE="${ZIP_MAX}m"
+
+            if [[ -n "$PASSWORD" ]]; then
+              zip -P "$PASSWORD" "$ZIPFILE" "$OUTFILE"
+            else
+              zip "$ZIPFILE" "$OUTFILE"
+            fi
+
+            SIZE=$(stat -c%s "$ZIPFILE")
+            MAX=$((ZIP_MAX * 1024 * 1024))
+
+            if (( SIZE > MAX )); then
+              split -b "$SPLIT_SIZE" "$ZIPFILE" "${ZIPFILE}_part_"
+              rm "$ZIPFILE"
+            fi
+
+            rm "$OUTFILE" "$PAGE"
+          done
+
+      - name: Commit results
+        run: |
+          git config user.name "GitHub Action"
+          git config user.email "actions@github.com"
+          git add downloads
+          git commit -m "Downloaded videos" || true
+          git push
